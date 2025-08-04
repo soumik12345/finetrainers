@@ -110,6 +110,7 @@ class Wan22ModelSpecification(WanModelSpecification):
 
         if not training:
             pipe.transformer.to(self.transformer_dtype)
+            pipe.transformer_2.to(self.transformer_2_dtype)
 
         if enable_model_cpu_offload:
             pipe.enable_model_cpu_offload()
