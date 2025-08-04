@@ -1,7 +1,8 @@
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import torch
-from diffusers import FlowMatchEulerDiscreteScheduler, WanTransformer3DModel
+from diffusers import WanTransformer3DModel
+from torch.nn.modules import Module
 
 from finetrainers.models.wan.base_specification import WanModelSpecification
 from finetrainers.processors.base import ProcessorMixin
@@ -40,3 +41,22 @@ class Wan22ModelSpecification(WanModelSpecification):
             revision=revision,
             cache_dir=cache_dir,
         )
+
+    def load_diffusion_models(self) -> Dict[str, Module]:
+        common_kwargs = {"revision": self.revision, "cache_dir": self.cache_dir}
+        diffusion_model_components = super().load_diffusion_models()
+
+        if self.transformer_2_id is not None:
+            transformer_2 = WanTransformer3DModel.from_pretrained(
+                self.transformer_2_id, torch_dtype=self.transformer_2_dtype, **common_kwargs
+            )
+        else:
+            transformer_2 = WanTransformer3DModel.from_pretrained(
+                self.pretrained_model_name_or_path,
+                subfolder="transformer_2",
+                torch_dtype=self.transformer_2_dtype,
+                **common_kwargs,
+            )
+
+        diffusion_model_components["transformer_2"] = transformer_2
+        return diffusion_model_components
