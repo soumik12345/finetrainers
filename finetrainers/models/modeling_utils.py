@@ -114,6 +114,7 @@ class ModelSpecification:
         text_encoder_2: Optional[torch.nn.Module] = None,
         text_encoder_3: Optional[torch.nn.Module] = None,
         transformer: Optional[torch.nn.Module] = None,
+        transformer_2: Optional[torch.nn.Module] = None,
         vae: Optional[torch.nn.Module] = None,
         scheduler: Optional[SchedulerType] = None,
         enable_slicing: bool = False,

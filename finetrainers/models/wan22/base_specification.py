@@ -1,11 +1,19 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import torch
-from diffusers import WanTransformer3DModel
+from diffusers import (
+    AutoencoderKLWan,
+    FlowMatchEulerDiscreteScheduler,
+    WanImageToVideoPipeline,
+    WanPipeline,
+    WanTransformer3DModel,
+)
 from torch.nn.modules import Module
+from transformers import AutoTokenizer, CLIPImageProcessor, CLIPVisionModel, UMT5EncoderModel
 
 from finetrainers.models.wan.base_specification import WanModelSpecification
 from finetrainers.processors.base import ProcessorMixin
+from finetrainers.utils import get_non_null_items
 
 
 class Wan22ModelSpecification(WanModelSpecification):
@@ -60,3 +68,48 @@ class Wan22ModelSpecification(WanModelSpecification):
 
         diffusion_model_components["transformer_2"] = transformer_2
         return diffusion_model_components
+
+    def load_pipeline(
+        self,
+        tokenizer: Optional[AutoTokenizer] = None,
+        text_encoder: Optional[UMT5EncoderModel] = None,
+        transformer: Optional[WanTransformer3DModel] = None,
+        transformer_2: Optional[WanTransformer3DModel] = None,
+        vae: Optional[AutoencoderKLWan] = None,
+        scheduler: Optional[FlowMatchEulerDiscreteScheduler] = None,
+        image_encoder: Optional[CLIPVisionModel] = None,
+        image_processor: Optional[CLIPImageProcessor] = None,
+        enable_slicing: bool = False,
+        enable_tiling: bool = False,
+        enable_model_cpu_offload: bool = False,
+        training: bool = False,
+        **kwargs,
+    ) -> Union[WanPipeline, WanImageToVideoPipeline]:
+        components = {
+            "tokenizer": tokenizer,
+            "text_encoder": text_encoder,
+            "transformer": transformer,
+            "transformer_2": transformer_2,
+            "vae": vae,
+            "scheduler": scheduler,
+            "image_encoder": image_encoder,
+            "image_processor": image_processor,
+        }
+        components = get_non_null_items(components)
+
+        if self.transformer_config.get("image_dim", None) is not None:
+            pipe = WanPipeline.from_pretrained(
+                self.pretrained_model_name_or_path, **components, revision=self.revision, cache_dir=self.cache_dir
+            )
+        else:
+            pipe = WanImageToVideoPipeline.from_pretrained(
+                self.pretrained_model_name_or_path, **components, revision=self.revision, cache_dir=self.cache_dir
+            )
+        pipe.text_encoder.to(self.text_encoder_dtype)
+        pipe.vae.to(self.vae_dtype)
+
+        if not training:
+            pipe.transformer.to(self.transformer_dtype)
+
+        if enable_model_cpu_offload:
+            pipe.enable_model_cpu_offload()
