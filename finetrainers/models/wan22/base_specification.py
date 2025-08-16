@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Tuple
 
 import torch
 from diffusers import (
@@ -11,9 +11,12 @@ from diffusers import (
 from torch.nn.modules import Module
 from transformers import AutoTokenizer, CLIPImageProcessor, CLIPVisionModel, UMT5EncoderModel
 
+import finetrainers.functional as FF
 from finetrainers.models.wan.base_specification import WanModelSpecification
 from finetrainers.processors.base import ProcessorMixin
 from finetrainers.utils import get_non_null_items
+
+from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 
 
 class Wan22ModelSpecification(WanModelSpecification):
@@ -33,6 +36,7 @@ class Wan22ModelSpecification(WanModelSpecification):
         cache_dir: Optional[str] = None,
         condition_model_processors: List[ProcessorMixin] = None,
         latent_model_processors: List[ProcessorMixin] = None,
+        boundary_ratio: float = 0.875,
         **kwargs,
     ) -> None:
         super().__init__(
@@ -48,7 +52,9 @@ class Wan22ModelSpecification(WanModelSpecification):
             vae_dtype=vae_dtype,
             revision=revision,
             cache_dir=cache_dir,
+            boundary_ratio=boundary_ratio
         )
+        self.boundary_ratio = boundary_ratio
 
     def load_diffusion_models(self) -> Dict[str, Module]:
         common_kwargs = {"revision": self.revision, "cache_dir": self.cache_dir}
@@ -67,6 +73,9 @@ class Wan22ModelSpecification(WanModelSpecification):
             )
 
         diffusion_model_components["transformer_2"] = transformer_2
+
+        scheduler = FlowMatchEulerDiscreteScheduler()
+
         return diffusion_model_components
 
     def load_pipeline(
@@ -114,3 +123,79 @@ class Wan22ModelSpecification(WanModelSpecification):
 
         if enable_model_cpu_offload:
             pipe.enable_model_cpu_offload()
+
+    def forward(
+        self,
+        transformer_1: WanTransformer3DModel,
+        transformer_2: WanTransformer3DModel,
+        condition_model_conditions: Dict[str, torch.Tensor],
+        latent_model_conditions: Dict[str, torch.Tensor],
+        sigmas: torch.Tensor,
+        generator: Optional[torch.Generator] = None,
+        compute_posterior: bool = True,
+        **kwargs
+    ) -> Tuple[torch.Tensor, ...]:
+        compute_posterior = False  # See explanation in prepare_latents
+        latent_condition = latent_condition_mask = None
+
+        if compute_posterior:
+            latents = latent_model_conditions.pop("latents")
+            latent_condition = latent_model_conditions.pop("latent_condition", None)
+            latent_condition_mask = latent_model_conditions.pop("latent_condition_mask", None)
+        else:
+            latents = latent_model_conditions.pop("latents")
+            latents_mean = latent_model_conditions.pop("latents_mean")
+            latents_std = latent_model_conditions.pop("latents_std")
+            latent_condition = latent_model_conditions.pop("latent_condition", None)
+            latent_condition_mask = latent_model_conditions.pop("latent_condition_mask", None)
+
+            mu, logvar = torch.chunk(latents, 2, dim=1)
+            mu = self._normalize_latents(mu, latents_mean, latents_std)
+            logvar = self._normalize_latents(logvar, latents_mean, latents_std)
+            latents = torch.cat([mu, logvar], dim=1)
+
+            posterior = DiagonalGaussianDistribution(latents)
+            latents = posterior.sample(generator=generator)
+
+            if latent_condition is not None:
+                mu, logvar = torch.chunk(latent_condition, 2, dim=1)
+                mu = self._normalize_latents(mu, latents_mean, latents_std)
+                logvar = self._normalize_latents(logvar, latents_mean, latents_std)
+                latent_condition = torch.cat([mu, logvar], dim=1)
+
+                posterior = DiagonalGaussianDistribution(latent_condition)
+                latent_condition = posterior.mode()
+
+            del posterior
+
+        noise = torch.zeros_like(latents).normal_(generator=generator)
+        noisy_latents = FF.flow_match_xt(latents, noise, sigmas)
+        timesteps = (sigmas.flatten() * 1000.0).long()
+
+        if self.transformer_config.get("image_dim", None) is not None:
+            noisy_latents = torch.cat([noisy_latents, latent_condition_mask, latent_condition], dim=1)
+
+        latent_model_conditions["hidden_states"] = noisy_latents.to(latents)
+
+        boundary_timestep = self.boundary_ratio * 1000 # TODO: Replace with self.scheduler.config.num_train_timesteps
+
+        for t in timesteps:
+            self._current_timestep = t
+            if boundary_timestep is None or t >= boundary_timestep:
+                # wan2.1 or high-noise stage in wan2.2
+                current_model = transformer_1
+            else:
+                # low-noise stage in wan2.2
+                current_model = transformer_2
+
+            pred = current_model(
+                **latent_model_conditions,
+                **condition_model_conditions,
+                timestep=timesteps,
+                return_dict=False,
+            )[0]
+
+            target = FF.flow_match_target(noise, latents)
+            self._current_timestep = None
+
+        return pred, target, sigmas
