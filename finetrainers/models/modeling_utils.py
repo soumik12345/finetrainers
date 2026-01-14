@@ -40,11 +40,13 @@ class ModelSpecification:
         text_encoder_2_id: Optional[str] = None,
         text_encoder_3_id: Optional[str] = None,
         transformer_id: Optional[str] = None,
+        transformer_2_id: Optional[str] = None,
         vae_id: Optional[str] = None,
         text_encoder_dtype: torch.dtype = torch.bfloat16,
         text_encoder_2_dtype: torch.dtype = torch.bfloat16,
         text_encoder_3_dtype: torch.dtype = torch.bfloat16,
         transformer_dtype: torch.dtype = torch.bfloat16,
+        transformer_2_dtype: torch.dtype = torch.bfloat16,
         vae_dtype: str = torch.bfloat16,
         revision: Optional[str] = None,
         cache_dir: Optional[str] = None,
@@ -59,11 +61,13 @@ class ModelSpecification:
         self.text_encoder_2_id = text_encoder_2_id
         self.text_encoder_3_id = text_encoder_3_id
         self.transformer_id = transformer_id
+        self.transformer_2_id = transformer_2_id
         self.vae_id = vae_id
         self.text_encoder_dtype = text_encoder_dtype
         self.text_encoder_2_dtype = text_encoder_2_dtype
         self.text_encoder_3_dtype = text_encoder_3_dtype
         self.transformer_dtype = transformer_dtype
+        self.transformer_2_dtype = transformer_2_dtype
         self.vae_dtype = vae_dtype
         self.revision = revision
         self.cache_dir = cache_dir
@@ -71,6 +75,7 @@ class ModelSpecification:
         self.latent_model_processors = latent_model_processors or []
 
         self.transformer_config: Dict[str, Any] = None
+        self.transformer_2_config: Dict[str, Any] = None
         self.vae_config: Dict[str, Any] = None
 
         self._load_configs()
@@ -109,6 +114,7 @@ class ModelSpecification:
         text_encoder_2: Optional[torch.nn.Module] = None,
         text_encoder_3: Optional[torch.nn.Module] = None,
         transformer: Optional[torch.nn.Module] = None,
+        transformer_2: Optional[torch.nn.Module] = None,
         vae: Optional[torch.nn.Module] = None,
         scheduler: Optional[SchedulerType] = None,
         enable_slicing: bool = False,
@@ -275,6 +281,33 @@ class ModelSpecification:
                 cache_dir=self.cache_dir,
             )
         self.transformer_config = FrozenDict(**self.transformer_config)
+
+        if self.transformer_2_id is not None:
+            transformer_2_cls = resolve_component_cls(
+                self.transformer_2_id,
+                component_name="_class_name",
+                filename="config.json",
+                revision=self.revision,
+                cache_dir=self.cache_dir,
+            )
+            self.transformer_2_config = transformer_2_cls.load_config(
+                self.transformer_2_id, revision=self.revision, cache_dir=self.cache_dir
+            )
+        else:
+            transformer_2_cls = resolve_component_cls(
+                self.pretrained_model_name_or_path,
+                component_name="transformer_2",
+                filename="model_index.json",
+                revision=self.revision,
+                cache_dir=self.cache_dir,
+            )
+            self.transformer_2_config = transformer_2_cls.load_config(
+                self.pretrained_model_name_or_path,
+                subfolder="transformer_2",
+                revision=self.revision,
+                cache_dir=self.cache_dir,
+            )
+        self.transformer_2_config = FrozenDict(**self.transformer_2_config)
 
     def _load_vae_config(self) -> None:
         if self.vae_id is not None:
